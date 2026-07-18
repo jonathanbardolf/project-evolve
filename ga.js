@@ -4,8 +4,8 @@ import { score } from './fitness.js';
 
 const MODES = new Set(['drag', 'ld', 'shedding']);
 const INITIAL_SIGMA_SCALE = 30;
-const MIN_SIGMA_SCALE = 18;
-const MAX_SIGMA_SCALE = 80;
+const MIN_SIGMA_SCALE = 1.75;
+const ANNEALING_RATE = 0.75;
 const MEANINGFUL_IMPROVEMENT = 0.002;
 const CHILD_MUTATION_MULTIPLIERS = [0.5, 1, 2, 4];
 
@@ -39,14 +39,12 @@ export class GeneticAlgorithm {
     if (bestScore > this.bestScoreSeen + threshold) {
       this.bestScoreSeen = bestScore;
       this.stagnationGenerations = 0;
-      this.sigmaScale = Math.max(MIN_SIGMA_SCALE, this.sigmaScale * 0.8);
-      return;
+    } else {
+      this.stagnationGenerations += 1;
     }
-
-    this.stagnationGenerations += 1;
-    if (this.stagnationGenerations >= 2) {
-      this.sigmaScale = Math.min(MAX_SIGMA_SCALE, this.sigmaScale * 1.5);
-    }
+    // The stratified 4x child explores while this deterministic schedule steadily hands
+    // control to refinement; noisy or flat fitness must never reheat a converging lineage.
+    this.sigmaScale = Math.max(MIN_SIGMA_SCALE, this.sigmaScale * ANNEALING_RATE);
   }
 
   setFitnessMode(mode) {
@@ -101,12 +99,16 @@ export class GeneticAlgorithm {
       .sort((a, b) => scores[b] - scores[a]);
     const best = ranked[0];
     const samplesPerTile = drag.length / this.cfg.POP;
+    let bestMeanLift = 0;
     let bestMeanDrag = 0;
     for (let sample = 0; sample < samplesPerTile; sample += 1) {
+      bestMeanLift += lift[best * samplesPerTile + sample];
       bestMeanDrag += drag[best * samplesPerTile + sample];
     }
-    const bestCd = (bestMeanDrag / samplesPerTile)
-      / (0.5 * this.cfg.U_IN * this.cfg.U_IN * this.cfg.CHORD);
+    const forceScale = 0.5 * this.cfg.U_IN * this.cfg.U_IN * this.cfg.CHORD;
+    const bestCl = (bestMeanLift / samplesPerTile) / forceScale;
+    const bestCd = (bestMeanDrag / samplesPerTile) / forceScale;
+    const bestLd = Math.abs(bestCd) > 1e-8 ? bestCl / bestCd : 0;
     this.lineage.push({ genome: new Float32Array(this.genomes[best]), score: scores[best] });
     this.adaptMutationStrength(scores[best]);
 
@@ -130,6 +132,8 @@ export class GeneticAlgorithm {
       bestIndex: best,
       bestScore: scores[best],
       bestCd,
+      bestCl,
+      bestLd,
       sigmaScale: this.sigmaScale,
       stagnationGenerations: this.stagnationGenerations,
       mutationScales: CHILD_MUTATION_MULTIPLIERS.map((scale) => scale * this.sigmaScale),

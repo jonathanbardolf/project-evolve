@@ -29,12 +29,24 @@ style.textContent = `
   body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   #flow { display: block; width: 100%; height: 100%; image-rendering: pixelated; }
   #status {
-    position: fixed; top: 16px; left: 16px; z-index: 1; max-width: min(680px, calc(100vw - 32px));
-    padding: 10px 12px; border: 1px solid #ffffff26; border-radius: 6px;
-    background: #05070acc; color: #d9e2ec; font-size: 12px; line-height: 1.55;
-    white-space: pre-wrap; pointer-events: none; backdrop-filter: blur(6px);
+    position: fixed; top: 16px; left: 16px; z-index: 1;
+    width: min(380px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto;
+    padding: 12px 14px; border: 1px solid #ffffff26; border-radius: 8px;
+    background: #05070acc; color: #d9e2ec; font-size: 12px; line-height: 1.45;
+    backdrop-filter: blur(6px);
   }
+  #status[hidden] { display: none; }
   #status.error { color: #ffb4a9; border-color: #ff6b5e66; }
+  .metric-grid {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 18px;
+    margin: 0;
+  }
+  .metric-grid dt { color: #8493a3; text-transform: uppercase; letter-spacing: 0.07em; }
+  .metric-grid dd { margin: 0; color: #f0f5fa; text-align: right; overflow-wrap: anywhere; }
+  .status-hint {
+    margin: 11px 0 0; padding-top: 9px; border-top: 1px solid #ffffff1c;
+    color: #8493a3; font-size: 11px;
+  }
   #speed-mode {
     position: fixed; top: 16px; right: 16px; z-index: 2; min-width: 132px;
     padding: 9px 12px; border: 1px solid #78dce866; border-radius: 6px;
@@ -43,7 +55,7 @@ style.textContent = `
   }
   #speed-mode:hover, #speed-mode:focus-visible { border-color: #78dce8cc; background: #111b25ee; }
   #speed-mode[data-mode="slow"] { color: #d9e2ec; border-color: #ffffff38; }
-  #evolve-mode, #fitness-mode {
+  #evolve-mode, #fitness-mode, #hud-toggle {
     position: fixed; right: 16px; z-index: 2; min-width: 132px;
     padding: 9px 12px; border: 1px solid #c792ea66; border-radius: 6px;
     background: #0b1118dd; color: #ead8ff; font: inherit; font-size: 12px;
@@ -51,10 +63,15 @@ style.textContent = `
   }
   #evolve-mode { top: 60px; cursor: pointer; }
   #fitness-mode { top: 104px; cursor: pointer; }
-  #evolve-mode:hover, #evolve-mode:focus-visible, #fitness-mode:hover, #fitness-mode:focus-visible {
+  #hud-toggle { top: 148px; cursor: pointer; color: #d9e2ec; border-color: #ffffff38; }
+  #evolve-mode:hover, #evolve-mode:focus-visible, #fitness-mode:hover, #fitness-mode:focus-visible,
+  #hud-toggle:hover, #hud-toggle:focus-visible {
     border-color: #c792eacc; background: #171025ee;
   }
   #evolve-mode[data-active="true"] { color: #a6e3a1; border-color: #a6e3a166; }
+  @media (max-width: 600px) {
+    #status { top: 196px; max-height: calc(100vh - 212px); }
+  }
 `;
 document.head.append(style);
 
@@ -63,10 +80,18 @@ canvas.id = 'flow';
 canvas.setAttribute('aria-label', 'Lattice-Boltzmann velocity view');
 document.body.append(canvas);
 
-const status = document.createElement('output');
+const status = document.createElement('section');
 status.id = 'status';
+status.setAttribute('role', 'status');
 status.setAttribute('aria-live', 'polite');
 document.body.append(status);
+
+const hudButton = document.createElement('button');
+hudButton.id = 'hud-toggle';
+hudButton.type = 'button';
+hudButton.title = 'Show or hide metrics (H)';
+hudButton.setAttribute('aria-controls', 'status');
+document.body.append(hudButton);
 
 const speedButton = document.createElement('button');
 speedButton.id = 'speed-mode';
@@ -116,7 +141,8 @@ let autoWindowFrames = 0;
 let autoWindowLongFrames = 0;
 let nextSlowStepAt = performance.now();
 let pendingSync = null;
-let diagLine = '';
+let forceDiagnostics = null;
+let hudVisible = true;
 let gl;
 let solver;
 let ga;
@@ -125,6 +151,8 @@ let evolveGenerationReady = false;
 let evolveBestScore = null;
 let evolveBestTile = 0;
 let evolveBestCd = null;
+let evolveBestCl = null;
+let evolveBestLd = null;
 let evolveSigmaScale = null;
 let evolveStagnationGenerations = 0;
 let evolveMutationScaleMin = null;
@@ -140,19 +168,56 @@ function resizeCanvas() {
   }
 }
 
+function renderStatusMetrics(rows, hint) {
+  const grid = document.createElement('dl');
+  grid.className = 'metric-grid';
+  for (const [label, value] of rows) {
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    grid.append(term, detail);
+  }
+  const controls = document.createElement('p');
+  controls.className = 'status-hint';
+  controls.textContent = hint;
+  status.replaceChildren(grid, controls);
+}
+
+function updateHudButton() {
+  status.hidden = !hudVisible;
+  hudButton.textContent = `HUD · ${hudVisible ? 'HIDE' : 'SHOW'}`;
+  hudButton.setAttribute('aria-expanded', String(hudVisible));
+}
+
+function toggleHud() {
+  hudVisible = !hudVisible;
+  updateHudButton();
+}
+
 function updateStatus() {
   if (evolveMode) {
-    const best = evolveBestScore === null
-      ? 'best awaiting generation'
-      : `best ${evolveBestScore.toFixed(4)} · Cd ${evolveBestCd.toFixed(2)} (tile ${evolveBestTile + 1})`;
-    const explorationState = evolveStagnationGenerations >= 2
-      ? 'EXPANDING'
-      : evolveStagnationGenerations === 1 ? 'STALLED' : 'ACTIVE';
+    const explorationState = evolveSigmaScale !== null && evolveSigmaScale <= 3.5
+      ? 'REFINING'
+      : evolveSigmaScale !== null && evolveSigmaScale <= 15 ? 'COOLING' : 'EXPLORING';
     const mutationRange = evolveMutationScaleMin === null
       ? 'pending'
       : `${evolveMutationScaleMin.toFixed(1)}–${evolveMutationScaleMax.toFixed(1)}`;
     const sigma = evolveSigmaScale === null ? 'pending' : evolveSigmaScale.toFixed(1);
-    status.textContent = `${paused ? 'EVOLVE PAUSED' : 'EVOLVING'}  |  ${view}\nGeneration ${ga.generation}  |  fitness ${ga.mode}  |  ${best}\nExplore ${explorationState}  ·  σ ${sigma}  ·  mutations ${mutationRange}  ·  stagnant ${evolveStagnationGenerations}g\nSpace pause/resume  ·  G EVOLVE on/off  ·  Fitness menu switches mode without reseeding  ·  V view  ·  F forces`;
+    renderStatusMetrics([
+      ['State', paused ? 'PAUSED' : 'EVOLVING'],
+      ['Generation', ga.generation.toLocaleString()],
+      ['Fitness', ga.mode.toUpperCase()],
+      ['Best score', evolveBestScore === null ? 'awaiting' : evolveBestScore.toFixed(4)],
+      ['Cd', evolveBestCd === null ? 'awaiting' : evolveBestCd.toFixed(3)],
+      ['Cl', evolveBestCl === null ? 'awaiting' : evolveBestCl.toFixed(3)],
+      ['L/D', evolveBestLd === null ? 'awaiting' : evolveBestLd.toFixed(3)],
+      ['Best tile', evolveBestScore === null ? 'awaiting' : String(evolveBestTile + 1)],
+      ['Anneal stage', explorationState],
+      ['Sigma', sigma],
+      ['Mutation range', mutationRange],
+      ['Stagnant generations', String(evolveStagnationGenerations)],
+    ], 'Space pause · G evolution · R reseed · V view · F forces · H hide');
     evolveButton.dataset.active = 'true';
     evolveButton.textContent = 'EVOLVE · ON';
     evolveButton.setAttribute('aria-pressed', 'true');
@@ -161,9 +226,28 @@ function updateStatus() {
   }
 
   const modeDetail = speedMode === 'auto'
-    ? `AUTO · ${autoBatch}/batch · probe ${autoAggression}/9`
-    : `SLOW · ${SLOW_STEPS_PER_SEC} target steps/s`;
-  status.textContent = `${paused ? 'PAUSED' : 'RUNNING'}  |  ${view}  |  ${modeDetail}  |  step ${totalSteps.toLocaleString()}\n${Math.round(stepsPerSec).toLocaleString()} steps/s  |  ${Math.round(framesPerSec)} fps\nSpace pause/resume  ·  A speed mode  ·  +/- AUTO probe  ·  . single step  ·  V view  ·  F forces  ·  R reset${diagLine ? '\n' + diagLine : ''}`;
+    ? `AUTO · batch ${autoBatch} · probe ${autoAggression}/9`
+    : `SLOW · batch 1 · ${SLOW_STEPS_PER_SEC} steps/s`;
+  const rows = [
+    ['State', paused ? 'PAUSED' : 'RUNNING'],
+    ['View', view],
+    ['Speed', modeDetail],
+    ['Step', totalSteps.toLocaleString()],
+    ['Steps/s', Math.round(stepsPerSec).toLocaleString()],
+    ['FPS', String(Math.round(framesPerSec))],
+  ];
+  if (forceDiagnostics) {
+    rows.push(
+      ['Cd', forceDiagnostics.cd.toFixed(2)],
+      ['Cl mean', forceDiagnostics.cl.toFixed(2)],
+      ['Cl RMS', forceDiagnostics.clRms.toFixed(2)],
+      ['St', forceDiagnostics.st.toFixed(3)],
+    );
+  }
+  renderStatusMetrics(
+    rows,
+    'Space pause · A speed · +/- probe · . step · V view · F forces · R reset · H hide',
+  );
   speedButton.dataset.mode = speedMode;
   speedButton.textContent = `SPEED · ${speedMode === 'auto' ? 'AUTO' : 'SLOW'}`;
   speedButton.setAttribute('aria-pressed', String(speedMode === 'auto'));
@@ -175,6 +259,8 @@ function updateStatus() {
 
 function fail(error) {
   paused = true;
+  hudVisible = true;
+  updateHudButton();
   status.classList.add('error');
   status.textContent = `EVOLVE COULD NOT START\n${error instanceof Error ? error.message : String(error)}\n\nOpen this project through its launcher, not directly as a file.`;
   console.error(error);
@@ -226,6 +312,8 @@ function setFitnessMode(mode) {
   ga.setFitnessMode(mode);
   evolveBestScore = null;
   evolveBestCd = null;
+  evolveBestCl = null;
+  evolveBestLd = null;
   resetEvolutionExplorationState();
   fitnessSelect.value = mode;
   updateStatus();
@@ -251,6 +339,8 @@ function driveEvolution() {
       evolveBestScore = result.bestScore;
       evolveBestTile = result.bestIndex;
       evolveBestCd = result.bestCd;
+      evolveBestCl = result.bestCl;
+      evolveBestLd = result.bestLd;
       evolveSigmaScale = result.sigmaScale;
       evolveStagnationGenerations = result.stagnationGenerations;
       evolveMutationScaleMin = Math.min(...result.mutationScales);
@@ -290,6 +380,8 @@ function reseedEvolution() {
   ga.reseed();
   evolveBestScore = null;
   evolveBestCd = null;
+  evolveBestCl = null;
+  evolveBestLd = null;
   evolveBestTile = 0;
   evolveGenerationReady = false;
   resetEvolutionExplorationState();
@@ -310,7 +402,12 @@ let forcesLive = false;
 function showDiagnostics() {
   const d = solver.diagnostics();
   // Mean lift is ~0 for the symmetric cylinder; the shed load lives in the RMS amplitude.
-  diagLine = `Cd ${d.cd[0].toFixed(2)}  ·  Cl ${d.cl[0].toFixed(2)} ±${d.clRms[0].toFixed(2)} rms  ·  St ${d.st[0].toFixed(3)}`;
+  forceDiagnostics = {
+    cd: d.cd[0],
+    cl: d.cl[0],
+    clRms: d.clRms[0],
+    st: d.st[0],
+  };
   console.log('[evolve] Phase 3 diagnostics', d);
 }
 
@@ -321,6 +418,8 @@ function handleKey(event) {
     paused = !paused;
     if (!paused && speedMode === 'slow') nextSlowStepAt = performance.now();
     event.preventDefault();
+  } else if (event.key.toLowerCase() === 'h') {
+    toggleHud();
   } else if (event.key.toLowerCase() === 'g') {
     toggleEvolveMode();
   } else if (event.key.toLowerCase() === 'a') {
@@ -346,7 +445,7 @@ function handleKey(event) {
   } else if (event.key.toLowerCase() === 'f') {
     forcesLive = !forcesLive;
     if (forcesLive) showDiagnostics();
-    else diagLine = '';
+    else forceDiagnostics = null;
   }
   updateStatus();
 }
@@ -490,8 +589,10 @@ try {
   ga = new GeneticAlgorithm(solver, cfg);
   resetEvolutionExplorationState();
   resizeCanvas();
+  updateHudButton();
   updateStatus();
   addEventListener('keydown', handleKey);
+  hudButton.addEventListener('click', toggleHud);
   speedButton.addEventListener('click', toggleSpeedMode);
   evolveButton.addEventListener('click', toggleEvolveMode);
   fitnessSelect.addEventListener('change', () => setFitnessMode(fitnessSelect.value));

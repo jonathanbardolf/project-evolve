@@ -58,15 +58,25 @@ uniform sampler2D u_f1;
 uniform sampler2D u_f2;
 uniform sampler2D u_solid;
 uniform int u_tileH;
+uniform bool u_fp16;
 out vec4 outForce;
 const ivec2 C[9] = ivec2[9](
   ivec2(0, 0), ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1),
   ivec2(1, 1), ivec2(-1, 1), ivec2(-1, -1), ivec2(1, -1));
 const int OPP[9] = int[9](0, 2, 1, 4, 3, 7, 8, 5, 6);
+const float W[9] = float[9](
+  4.0 / 9.0,
+  1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0, 1.0 / 9.0,
+  1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0, 1.0 / 36.0
+);
+// Momentum exchange needs the true f_i; in fp16 mode the distribution textures hold the
+// deviation g_i = f_i - W[i] (see lbm_collide.glsl), so add the weight back on read.
 float loadF(ivec2 p, int i) {
-  if (i < 4) return texelFetch(u_f0, p, 0)[i];
-  if (i < 8) return texelFetch(u_f1, p, 0)[i - 4];
-  return texelFetch(u_f2, p, 0).r;
+  float raw;
+  if (i < 4) raw = texelFetch(u_f0, p, 0)[i];
+  else if (i < 8) raw = texelFetch(u_f1, p, 0)[i - 4];
+  else raw = texelFetch(u_f2, p, 0).r;
+  return u_fp16 ? raw + W[i] : raw;
 }
 void main() {
   ivec2 p = ivec2(gl_FragCoord.xy);
@@ -163,10 +173,11 @@ function loadShaderSource(relativeUrl) {
   return request.responseText;
 }
 
+const D2Q9_WEIGHTS = [4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 / 36];
+
 function equilibrium(uIn) {
   const cx = [0, 1, -1, 0, 0, 1, -1, -1, 1];
-  const weights = [4 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 9, 1 / 36, 1 / 36, 1 / 36, 1 / 36];
-  return weights.map((weight, i) => {
+  return D2Q9_WEIGHTS.map((weight, i) => {
     const cu = cx[i] * uIn;
     return weight * (1 + 3 * cu + 4.5 * cu * cu - 1.5 * uIn * uIn);
   });
@@ -183,6 +194,34 @@ export class LBM {
     this.height = cfg.TILE_H * cfg.GRID_Y;
     this._readSet = 0;
     this._sampleCount = cfg.EVAL_STEPS / cfg.SAMPLE_EVERY;
+
+    // fp16 bandwidth experiment. Default OFF => byte-identical RGBA32F behavior. When ON, the
+    // 3 distribution textures switch to RGBA16F storing the deviation g_i = f_i - W[i]
+    // (see lbm_collide.glsl); trivially revertible by flipping this flag back to false/omitted.
+    // Enable via cfg.FP16_DISTRIBUTIONS or the URL (?fp16) so it can be A/B-tested without
+    // editing the frozen cfg object.
+    const fp16Url = typeof location !== 'undefined' && /[?&]fp16(=(1|true|on))?(&|$)/i.test(location.search);
+    this.fp16 = !!cfg.FP16_DISTRIBUTIONS || fp16Url;
+    this._distributionFormat = this.fp16 ? gl.RGBA16F : gl.RGBA32F;
+
+    // Stage 0: optional per-pass GPU timing via EXT_disjoint_timer_query_webgl2. Absent on
+    // some browsers (e.g. Safari) — degrade gracefully, never crash or stall a frame for it.
+    this._timerExt = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+    this._timingEvery = cfg.TIMING_EVERY || 60;
+    // Per-pass timer queries are unreliable on some drivers (Chrome/macOS-Metal reports
+    // uniform ~frame-sized garbage). Keep the console breakdown opt-in via ?timing; the
+    // app HUD steps/s (wall-clock) is the trustworthy throughput signal.
+    this._timingVerbose = typeof location !== 'undefined' && /[?&]timing(=|&|$)/.test(location.search);
+    this._timerActivePass = null;
+    this._timingPending = [];
+    this._timingLatest = { collideMs: null, forceMs: null, reduceYMs: null, reduceXMs: null };
+    this._timingEMA = { collideMs: null, forceMs: null, reduceYMs: null, reduceXMs: null };
+
+    console.log(
+      `[LBM] distributions: ${this.fp16 ? 'RGBA16F (fp16, deviation-stored)' : 'RGBA32F (fp32)'}` +
+      ` | GPU timer queries: ${this._timerExt ? 'supported' : 'UNSUPPORTED on this browser'}` +
+      `${this.fp16 ? '' : '  — add ?fp16 to the URL to try half-precision'}`
+    );
 
     const tauMinus = 0.5 + cfg.MAGIC / (cfg.TAU_PLUS - 0.5);
     this.omegaPlus = 1 / cfg.TAU_PLUS;
@@ -209,6 +248,7 @@ export class LBM {
     gl.uniform1f(gl.getUniformLocation(this._program, 'u_uIn'), cfg.U_IN);
     gl.uniform1f(gl.getUniformLocation(this._program, 'u_omegaPlus'), this.omegaPlus);
     gl.uniform1f(gl.getUniformLocation(this._program, 'u_omegaMinus'), this.omegaMinus);
+    gl.uniform1i(gl.getUniformLocation(this._program, 'u_fp16'), this.fp16 ? 1 : 0);
 
     gl.useProgram(this._debugProgram);
     gl.uniform1i(gl.getUniformLocation(this._debugProgram, 'u_velocity'), 0);
@@ -240,6 +280,7 @@ export class LBM {
     gl.uniform1i(gl.getUniformLocation(this._forceProgram, 'u_f2'), 2);
     gl.uniform1i(gl.getUniformLocation(this._forceProgram, 'u_solid'), 3);
     gl.uniform1i(gl.getUniformLocation(this._forceProgram, 'u_tileH'), cfg.TILE_H);
+    gl.uniform1i(gl.getUniformLocation(this._forceProgram, 'u_fp16'), this.fp16 ? 1 : 0);
 
     gl.useProgram(this._reduceYProgram);
     gl.uniform1i(gl.getUniformLocation(this._reduceYProgram, 'u_force'), 0);
@@ -317,7 +358,7 @@ export class LBM {
 
   _createStateSet() {
     const gl = this.gl;
-    return Array.from({ length: 3 }, () => this._createTexture(gl.RGBA32F, gl.RGBA, gl.FLOAT));
+    return Array.from({ length: 3 }, () => this._createTexture(this._distributionFormat, gl.RGBA, gl.FLOAT));
   }
 
   _createMaskTexture() {
@@ -380,10 +421,12 @@ export class LBM {
   reset() {
     const gl = this.gl;
     const f = equilibrium(this.cfg.U_IN);
+    // fp16 mode stores g_i = f_i - W[i]; clear with the same encoding the shader reads/writes.
+    const stored = this.fp16 ? f.map((v, i) => v - D2Q9_WEIGHTS[i]) : f;
     const clears = [
-      new Float32Array(f.slice(0, 4)),
-      new Float32Array(f.slice(4, 8)),
-      new Float32Array([f[8], this.cfg.U_IN, 0, Math.abs(this.cfg.U_IN)]),
+      new Float32Array(stored.slice(0, 4)),
+      new Float32Array(stored.slice(4, 8)),
+      new Float32Array([stored[8], this.cfg.U_IN, 0, Math.abs(this.cfg.U_IN)]),
     ];
     for (const framebuffer of this._framebuffers) {
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, framebuffer);
@@ -418,17 +461,20 @@ export class LBM {
     gl.bindTexture(gl.TEXTURE_2D, this._solidMask);
 
     for (let step = 0; step < n; ++step) {
+      const timed = !!this._timerExt && (this._stepCounter + 1) % this._timingEvery === 0;
       const writeSet = 1 - this._readSet;
       gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this._framebuffers[writeSet]);
       for (let i = 0; i < 3; ++i) {
         gl.activeTexture(gl.TEXTURE0 + i);
         gl.bindTexture(gl.TEXTURE_2D, this._textures[this._readSet][i]);
       }
+      const collideQuery = timed ? this._beginTimer('collideMs') : null;
       gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (collideQuery) this._endTimer(collideQuery);
       this._readSet = writeSet;
 
       if (++this._stepCounter % this.cfg.SAMPLE_EVERY === 0) {
-        this._sample();
+        this._sample(timed);
         // _sample rebinds program/viewport/targets; restore the collision pipeline.
         gl.useProgram(this._program);
         gl.viewport(0, 0, this.width, this.height);
@@ -437,11 +483,91 @@ export class LBM {
       }
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this._pollTimers();
+  }
+
+  // --- Stage 0: per-pass GPU timing (EXT_disjoint_timer_query_webgl2) ---
+  // Only one TIME_ELAPSED_EXT query may be active at a time, so passes are timed
+  // sequentially (begin/end fully before the next begins) and results are polled a few
+  // frames later without ever blocking on gl.getQueryParameter.
+  _beginTimer(pass) {
+    if (!this._timerExt || this._timerActivePass) return null;
+    const gl = this.gl;
+    const query = gl.createQuery();
+    gl.beginQuery(this._timerExt.TIME_ELAPSED_EXT, query);
+    this._timerActivePass = pass;
+    return query;
+  }
+
+  _endTimer(query) {
+    if (!query) return;
+    const gl = this.gl;
+    gl.endQuery(this._timerExt.TIME_ELAPSED_EXT);
+    this._timingPending.push({ query, pass: this._timerActivePass });
+    this._timerActivePass = null;
+  }
+
+  _pollTimers() {
+    if (!this._timerExt || this._timingPending.length === 0) return;
+    const gl = this.gl;
+    const ext = this._timerExt;
+    const disjoint = gl.getParameter(ext.GPU_DISJOINT_EXT);
+    const still = [];
+    let updated = false;
+    for (const item of this._timingPending) {
+      if (disjoint) { gl.deleteQuery(item.query); continue; }  // discard: result untrustworthy
+      if (gl.getQueryParameter(item.query, gl.QUERY_RESULT_AVAILABLE)) {
+        const ns = gl.getQueryParameter(item.query, gl.QUERY_RESULT);
+        const ms = ns / 1e6;
+        this._timingLatest[item.pass] = ms;
+        const prevEma = this._timingEMA[item.pass];
+        this._timingEMA[item.pass] = prevEma == null ? ms : prevEma * 0.9 + ms * 0.1;
+        gl.deleteQuery(item.query);
+        updated = true;
+      } else {
+        still.push(item);
+      }
+    }
+    this._timingPending = still;
+    if (updated) this._logTimingSummary();
+  }
+
+  _logTimingSummary() {
+    if (!this._timingVerbose) return;
+    const t = this._timingEMA;
+    const collide = t.collideMs;
+    const reduceTotal = (t.forceMs || 0) + (t.reduceYMs || 0) + (t.reduceXMs || 0);
+    const stepsPerSec = collide ? 1000 / collide : null;
+    const fmt = (v) => (v == null ? 'n/a' : v.toFixed(3));
+    console.log(
+      `[LBM timing ${this.fp16 ? 'fp16' : 'fp32'}] collide=${fmt(collide)}ms force=${fmt(t.forceMs)}ms ` +
+      `reduceY=${fmt(t.reduceYMs)}ms reduceX=${fmt(t.reduceXMs)}ms ` +
+      `reduceTotal=${reduceTotal.toFixed(3)}ms ` +
+      `steps/s=${stepsPerSec ? stepsPerSec.toFixed(0) : 'n/a'}`
+    );
+  }
+
+  // Public read-out of the latest timing sample (EMA-smoothed). Returns supported:false and
+  // null timings when EXT_disjoint_timer_query_webgl2 is unavailable.
+  getTimings() {
+    if (!this._timerExt) {
+      return { supported: false, collideMs: null, forceMs: null, reduceYMs: null, reduceXMs: null, stepsPerSec: null };
+    }
+    const t = this._timingEMA;
+    const stepsPerSec = t.collideMs ? 1000 / t.collideMs : null;
+    return {
+      supported: true,
+      collideMs: t.collideMs,
+      forceMs: t.forceMs,
+      reduceYMs: t.reduceYMs,
+      reduceXMs: t.reduceXMs,
+      stepsPerSec,
+    };
   }
 
   // Force -> per-tile reduction -> append one column to the ring history texture. Runs on
   // the GPU; no readback here. Called from step() every SAMPLE_EVERY steps.
-  _sample() {
+  _sample(timed = false) {
     const gl = this.gl;
     gl.bindVertexArray(this._vao);
     gl.disable(gl.BLEND);
@@ -456,14 +582,18 @@ export class LBM {
     }
     gl.activeTexture(gl.TEXTURE0 + 3);
     gl.bindTexture(gl.TEXTURE_2D, this._solidMask);
+    let query = timed ? this._beginTimer('forceMs') : null;
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (query) this._endTimer(query);
 
     gl.useProgram(this._reduceYProgram);
     gl.viewport(0, 0, this.width, this.cfg.GRID_Y);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this._rowFBO);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._forceTex);
+    query = timed ? this._beginTimer('reduceYMs') : null;
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (query) this._endTimer(query);
 
     const col = this._sampleIndex % this._sampleSlots;
     gl.useProgram(this._reduceXProgram);
@@ -471,7 +601,9 @@ export class LBM {
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, this._historyFBO);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this._rowTex);
+    query = timed ? this._beginTimer('reduceXMs') : null;
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (query) this._endTimer(query);
 
     this._sampleIndex += 1;
   }

@@ -11,6 +11,12 @@ uniform int u_tileH;
 uniform float u_uIn;
 uniform float u_omegaPlus;
 uniform float u_omegaMinus;
+// fp16 bandwidth experiment (default off, see LBM constructor cfg.FP16_DISTRIBUTIONS): when
+// true the distribution textures store the deviation g_i = f_i - W[i] instead of f_i itself.
+// f_i sits within O(Ma^2) of W[i], so raw fp16 storage would quantize away the physics; storing
+// the small centered deviation keeps full relative precision in fp16 while every arithmetic
+// step below still operates on full fp32 f_i (converted back at loadF/storeF boundary).
+uniform bool u_fp16;
 
 layout(location = 0) out vec4 outF0;
 layout(location = 1) out vec4 outF1;
@@ -29,9 +35,12 @@ const float W[9] = float[9](
 );
 
 float loadF(ivec2 p, int i) {
-  if (i < 4) return texelFetch(u_f0, p, 0)[i];
-  if (i < 8) return texelFetch(u_f1, p, 0)[i - 4];
-  return texelFetch(u_f2, p, 0).r;
+  float raw;
+  if (i < 4) raw = texelFetch(u_f0, p, 0)[i];
+  else if (i < 8) raw = texelFetch(u_f1, p, 0)[i - 4];
+  else raw = texelFetch(u_f2, p, 0).r;
+  // Storage holds g_i = f_i - W[i] in fp16 mode; reconstruct full f_i in fp32 here.
+  return u_fp16 ? raw + W[i] : raw;
 }
 
 bool isSolid(ivec2 p) {
@@ -39,10 +48,16 @@ bool isSolid(ivec2 p) {
 }
 
 void storeF(float f[9], vec2 velocity) {
-  outF0 = vec4(f[0], f[1], f[2], f[3]);
-  outF1 = vec4(f[4], f[5], f[6], f[7]);
-  // The state needs only R here; G/B are free diagnostics for velocityTexture.
-  outF2 = vec4(f[8], velocity, length(velocity));
+  if (u_fp16) {
+    outF0 = vec4(f[0] - W[0], f[1] - W[1], f[2] - W[2], f[3] - W[3]);
+    outF1 = vec4(f[4] - W[4], f[5] - W[5], f[6] - W[6], f[7] - W[7]);
+    outF2 = vec4(f[8] - W[8], velocity, length(velocity));
+  } else {
+    outF0 = vec4(f[0], f[1], f[2], f[3]);
+    outF1 = vec4(f[4], f[5], f[6], f[7]);
+    // The state needs only R here; G/B are free diagnostics for velocityTexture.
+    outF2 = vec4(f[8], velocity, length(velocity));
+  }
 }
 
 void equilibrium(float rho, vec2 u, out float f[9]) {

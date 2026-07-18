@@ -3,14 +3,14 @@
 # Read at session start. Append at session end. Nothing else.
 
 ## STATUS
-Phase: 5 — drag unit test active; fixed-area genomes + stratified adaptive mutation (base 18–80, children 0.5×/1×/2×/4×)
+Phase: 5 — drag unit test active; fixed-area genomes + stratified annealed mutation (base 30→1.75, children 0.5×/1×/2×/4×)
 Files existing: lbm.js, main.js, shaders/*, genome.js, raster.js, ga.js, fitness.js
-Last verified: drag evolution improved from Cd 1.5 to 3.3, then diversity slowed. Stratified mutations now guarantee refinement and exploratory children every generation; browser retest pending.
+Last verified: drag evolution reached Cd 3.74, validating the force/selection pipeline, but reheated base mutation stayed too coarse to converge a clean plate. Deterministic annealing now keeps early stratified exploration and reaches refinement scale by generation ~10; browser retest pending.
 
 ## MEASURED (real numbers, not spec numbers)
 tau_plus = 0.56, omega_plus = 1.7857, omega_minus = 0.2143  (derived; independently confirmed by Codex Sol 2026-07-17)
 observed Cd = 0.97 (browser, after force-sign flip; order 1, below lit 1-3 but fine — GA uses RELATIVE values only)
-drag evolution best Cd = 3.3 (browser; improved from prior 1.5 plateau, confirming force fitness retains a gradient)
+drag evolution best Cd = 3.74 (browser; improved from prior 1.5 plateau, validating force/selection direction)
 observed St = 0.133 (browser zero-crossings; slightly under lit 0.15-0.20, ballpark given ~1 period/window). Lift: mean~0 (symmetric body), oscillates; RMS Cl shown in HUD.
 lift sign convention: force vector negated globally, so lift = -Fy, consistent with drag. Direction is a convention, not pinned to physical +y.
 
@@ -18,9 +18,6 @@ lift sign convention: force vector negated globally, so lift = -Fy, consistent w
 - 
 
 ## BROKEN / KNOWN-WEIRD
-- 2026-07-17 coordinator: Phase 2 GO/NO-GO PASSED in browser — visible Karman street, periodic flapping, all 16 tiles in-phase, tile seams leak-free. Phase 2 COMPLETE.
-- 2026-07-17 coordinator: perf/UX — decoupled compute (fence-gated setTimeout loop, vsync-free) from render (rAF) in main.js; hoisted redundant GL state out of step loop; steps/frame cap 64->512; vorticity recolored to dark-bg glow (warm=CCW, cool=CW), u_scale 0.02->0.013, solids gray. GPU-bound ceiling ~1200 steps/s stands.
-- 2026-07-17 integrator: main.js speed control is now AUTO/SLOW (button, A toggle, ↑/↓ select); AUTO fence-times one in-flight batch and responds to render-frame pressure, SLOW targets 30 steps/s; HUD reports batch, throughput, and FPS. Node syntax/whitespace checks pass; runtime rate remains browser/GPU-dependent.
 - 2026-07-17 coordinator: adaptive-speed integration reviewed and confirmed live on localhost:8765; browser automation unavailable, so visual FPS/throughput validation remains user-side.
 - 2026-07-17 coordinator: solver perf — mask now 3-valued (0 open / 128 fluid-adjacent-to-solid / 255 solid); open-fluid cells fast-path pure-streaming, skipping 8 per-link solid fetches/step (~18->10 fetches for interior cells). Numerically identical (no-solid-neighbor cells never bounce back). isSolid threshold + vorticity solid paint bumped to >0.75. Node syntax OK; browser speedup/stability unverified (user reload).
 - 2026-07-17 coordinator: Phase 3 BUILT — momentum-exchange force (FORCE_FRAGMENT, body links only, tile walls excluded by localY position) + 2-pass GPU reduction (reduceY W×4, reduceX writes per-tile into ring history) + RGBA32F 300×16 history; step() samples every SAMPLE_EVERY; readLift/DragHistory do one readPixels + unrotate; diagnostics() computes Cd=meanDrag/(0.5 U^2 D) & St from lift zero-crossings. Boundary-flag derivation MOVED debugMask->setSolidMask so raster.js 0/255 masks also fast-path (Phase-4 correctness). main.js: F key shows Cd/St. Node syntax OK; NOT browser-verified — gate St 0.15-0.20, Cd 1-3, drag>0.
@@ -37,4 +34,7 @@ lift sign convention: force vector negated globally, so lift = -Fy, consistent w
 - 2026-07-18 GA: drag-plateau fix keeps locked top-4 mutation-only selection but raises lattice-scale mutation to adaptive 30 (floor 18, cap 60): meaningful gains cool it, 2+ stagnant generations expand it, and reseed or a changed fitness mode resets adaptation without replacing the population/lineage. Deterministic checks pass for 4×4 reproduction, elite preservation, growth/cooling/cap/reset; syntax and diff checks pass. Browser drag retest pending.
 - 2026-07-18 coordinator: plateau fixes reviewed cross-layer — valid star-convex genomes now preserve true fixed area, scale-30 mutations change bbox geometry where scale 3 did not, and GA selection/non-blocking behavior remains intact. Reload → R → G drag retest is the remaining gate.
 - 2026-07-18 integrator: EVOLVE HUD now reports adaptive exploration state from each finishGeneration result (sigmaScale, mutation-scale range, stagnation count/status), with correct pending/reset state at initialization, reseed, and fitness-mode changes. Generation stepping and speed control unchanged; main.js Node syntax/whitespace checks pass, browser display validation pending refresh.
-- 2026-07-18 coordinator: second plateau fix — every retained parent now produces 0.5×/1×/2×/4× mutation scales; stagnation expands base sigma 1.5× to cap 80. At the cooled floor, raster tests changed ~45–326 pixels across child scales, preventing visually static generations without immigrants/crossover.
+- 2026-07-18 coordinator: drag reached Cd 3.74; GA now uses classic explore→exploit annealing while retaining top-4 ×4 mutation-only selection, one elite, and 0.5×/1×/2×/4× children. Base sigma stays 30 for the first offspring, then cools 0.75×/generation to floor 1.75 by ~generation 10; fitness stagnation never reheats it. Deterministic monotonic-cooling/floor/reset/reproduction/elite checks and syntax pass; browser plate-convergence retest pending.
+- 2026-07-18 coordinator: added `OPEN_EVOLVE.bat` for Windows; it detects the Python launcher or `python`, serves localhost:8765, opens the default browser, and stops with its terminal. macOS keeps `OPEN_EVOLVE.command`.
+- 2026-07-18 integrator: main.js HUD rebuilt as a responsive two-column metric grid with separate normal/EVOLVE/force rows; persistent HUD button and H shortcut hide only the panel while mode/fitness controls and simulation remain active, and errors force it visible. Node syntax/whitespace checks pass; browser layout validation pending refresh.
+- 2026-07-18 coordinator: EVOLVE generation results and HUD now report best-individual Cd, signed Cl, and signed L/D from the same evaluation window; deterministic history check gave expected Cd=3, Cl=2, L/D=0.667. Evolution logic unchanged; syntax/diff checks pass.
