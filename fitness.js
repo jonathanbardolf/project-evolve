@@ -17,7 +17,13 @@ export function score(liftHist, dragHist, mode, cfg) {
     if (mode === 'drag') {
       scores[t] = meanDrag;
     } else if (mode === 'ld') {
-      scores[t] = Math.abs(meanDrag) > 1e-8 ? meanLift / meanDrag : 0;
+      // Require genuine POSITIVE drag above a floor. The naive meanLift/meanDrag lets the GA
+      // game L/D by driving drag toward 0 (or slightly negative), exploding the ratio to ~1e4
+      // — a measurement singularity, not an airfoil. Below the floor, fall back to lift minus a
+      // large penalty: cheaters can't win, but there's still a gradient pushing drag up over
+      // the floor. DRAG_FLOOR ~= Cd 0.08 at q = 0.5*U^2*D = 0.05; tune if airfoils read too draggy.
+      const DRAG_FLOOR = 0.004;
+      scores[t] = meanDrag > DRAG_FLOOR ? meanLift / meanDrag : meanLift - 1000;
     } else if (mode === 'lift') {
       // Warm-up: reward sustained lift in either direction to force camber/asymmetry,
       // breaking the shallow-gradient stall of 'ld' where symmetric blobs make ~0 lift.
