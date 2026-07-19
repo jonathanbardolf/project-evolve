@@ -9,6 +9,13 @@ const ANNEALING_RATE = 0.75;
 const MEANINGFUL_IMPROVEMENT = 0.002;
 const CHILD_MUTATION_MULTIPLIERS = [0.5, 1, 2, 4];
 
+// Heterogeneous population: a handful of offspring slots each generation are "explorers" —
+// they mutate at a much larger effective sigma than the stratified refiners above, drawing
+// from the same top keepers as parents, so the population always keeps hard exploratory
+// pressure to break plateaus even after the annealer has cooled sigmaScale way down.
+const EXPLORER_COUNT = 5;
+const EXPLORER_AGGRESSION_FACTOR = 8;
+
 // AUTO curriculum: warm up scoring on |mean lift| (forces camber, avoids the ~0-gradient
 // symmetric-blob stall of raw L/D from a cold start), then switch to 'ld' once camber is
 // established. Whichever trigger fires first wins; once switched, never switches back.
@@ -168,6 +175,17 @@ export class GeneticAlgorithm {
         next.push(mutate(parent, mutationScale, this.rng));
       }
     }
+    // Explorer children: overwrite the tail slots of the offspring array with aggressively
+    // mutated copies of the top keepers. This runs after the stratified refiners above and
+    // before the elite copy below, so elitism still has the final word on slot 0..ELITE-1.
+    const explorerCount = Math.min(EXPLORER_COUNT, this.cfg.POP);
+    const explorerMutationScale = this.sigmaScale * EXPLORER_AGGRESSION_FACTOR;
+    for (let e = 0; e < explorerCount; e += 1) {
+      const slot = this.cfg.POP - 1 - e;
+      const explorerParent = this.genomes[ranked[e % this.cfg.KEEP]];
+      next[slot] = mutate(explorerParent, explorerMutationScale, this.rng);
+    }
+
     for (let i = 0; i < this.cfg.ELITE; i += 1) {
       next[i] = new Float32Array(this.genomes[ranked[i]]);
     }
