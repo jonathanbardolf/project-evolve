@@ -108,7 +108,7 @@ document.body.append(evolveButton);
 const fitnessSelect = document.createElement('select');
 fitnessSelect.id = 'fitness-mode';
 fitnessSelect.title = 'Evolution fitness mode';
-for (const mode of ['drag', 'ld', 'shedding']) {
+for (const mode of ['drag', 'ld', 'lift', 'shedding']) {
   const option = document.createElement('option');
   option.value = mode;
   option.textContent = `FITNESS · ${mode.toUpperCase()}`;

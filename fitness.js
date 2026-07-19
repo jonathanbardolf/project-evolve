@@ -18,6 +18,10 @@ export function score(liftHist, dragHist, mode, cfg) {
       scores[t] = meanDrag;
     } else if (mode === 'ld') {
       scores[t] = Math.abs(meanDrag) > 1e-8 ? meanLift / meanDrag : 0;
+    } else if (mode === 'lift') {
+      // Warm-up: reward sustained lift in either direction to force camber/asymmetry,
+      // breaking the shallow-gradient stall of 'ld' where symmetric blobs make ~0 lift.
+      scores[t] = Math.abs(meanLift);
     } else if (mode === 'shedding') {
       let crossings = 0;
       let previous = 0;

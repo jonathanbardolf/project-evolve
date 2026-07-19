@@ -2,7 +2,7 @@ import { mutate, seedGenome } from './genome.js';
 import { rasterize } from './raster.js';
 import { score } from './fitness.js';
 
-const MODES = new Set(['drag', 'ld', 'shedding']);
+const MODES = new Set(['drag', 'ld', 'lift', 'shedding']);
 const INITIAL_SIGMA_SCALE = 30;
 const MIN_SIGMA_SCALE = 1.75;
 const ANNEALING_RATE = 0.75;
