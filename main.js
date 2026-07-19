@@ -94,6 +94,13 @@ style.textContent = `
   .tile-nav[hidden] { display: none; }
   #tile-nav-prev { left: 16px; }
   #tile-nav-next { right: 16px; }
+  #tile-number {
+    position: fixed; left: 16px; bottom: 16px; z-index: 2;
+    padding: 6px 10px; border: 1px solid #bd6bf24d; border-radius: 6px;
+    background: #0b1118a6; color: #d8b4f7; font-size: 13px; letter-spacing: 0.04em;
+    backdrop-filter: blur(6px); pointer-events: none;
+  }
+  #tile-number[hidden] { display: none; }
   .legend-labels {
     display: flex; justify-content: space-between; color: #6b7686; font-size: 10px;
     letter-spacing: 0.03em; text-transform: uppercase;
@@ -201,6 +208,11 @@ tileNextButton.hidden = true;
 tileNextButton.setAttribute('aria-label', 'Next tile');
 tileNextButton.innerHTML = '&#8250;';
 document.body.append(tileNextButton);
+
+const tileNumberBadge = document.createElement('div');
+tileNumberBadge.id = 'tile-number';
+tileNumberBadge.hidden = true;
+document.body.append(tileNumberBadge);
 
 const lineagePanel = document.createElement('section');
 lineagePanel.id = 'lineage-panel';
@@ -339,6 +351,8 @@ function updateStatus() {
   updateTileViewButton();
   tilePrevButton.hidden = !singleTileView;
   tileNextButton.hidden = !singleTileView;
+  tileNumberBadge.hidden = !singleTileView;
+  if (singleTileView) tileNumberBadge.textContent = `Tile ${currentTileIndex() + 1}`;
   if (evolveMode) {
     const explorationState = evolveSigmaScale !== null && evolveSigmaScale <= 3.5
       ? 'REFINING'
