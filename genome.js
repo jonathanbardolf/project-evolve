@@ -75,8 +75,13 @@ export function mutate(genome, sigmaScale, rng) {
   const child = new Float32Array(genome);
   for (let n = 1; n <= N_HARMONICS; n += 1) {
     const sigma = (0.05 / n) * sigmaScale;
-    child[n] += gaussian(rng) * sigma;
-    child[N_HARMONICS + n] += gaussian(rng) * sigma;
+    // Pure additive noise on high harmonics random-walks upward over many generations
+    // (no selection pressure opposes it) and shows up as jagged, lumpy edges even after
+    // camber (low harmonics) has converged. Shrink n>3 toward zero each mutation so noise
+    // there decays instead of accumulating; low harmonics (camber/thickness) are untouched.
+    const shrink = n <= 3 ? 1 : Math.max(0.85, 1 - 0.03 * (n - 3));
+    child[n] = child[n] * shrink + gaussian(rng) * sigma;
+    child[N_HARMONICS + n] = child[N_HARMONICS + n] * shrink + gaussian(rng) * sigma;
   }
   child[0] += gaussian(rng) * 0.05 * sigmaScale;
   repairPositiveRadius(child);

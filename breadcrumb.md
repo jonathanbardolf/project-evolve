@@ -3,9 +3,9 @@
 # Read at session start. Append at session end. Nothing else.
 
 ## STATUS
-Phase: 5 — drag unit test active; fixed-area genomes + stratified annealed mutation (base 30→1.75, children 0.5×/1×/2×/4×)
-Files existing: lbm.js, main.js, shaders/*, genome.js, raster.js, ga.js, fitness.js
-Last verified: drag evolution reached Cd 3.74, validating the force/selection pipeline, but reheated base mutation stayed too coarse to converge a clean plate. Deterministic annealing now keeps early stratified exploration and reaches refinement scale by generation ~10; browser retest pending.
+Phase: 5 COMPLETE (genuine airfoil evolved) — READY FOR PHASE 6 (lineage gallery + visual polish)
+Files: lbm.js, main.js, shaders/*, genome.js, raster.js, ga.js, fitness.js
+Last verified (browser): AUTO curriculum (|lift| warmup -> L/D refine, auto-switch on |CL|>1 x2 gens / 15-gen cap / MaxMach>0.2 guard) evolves cambered airfoils: L/D 28.5, CL 2.29, Cd 0.08, MaxMach 0.18. Key fixes: fitness 'ld' regularized (DRAG_FLOOR 0.004 in fitness.js) to kill the drag->0 L/D exploit (was L/D 46837); heterogeneous mutation in ga.js (EXPLORER_COUNT 5 @ EXPLORER_AGGRESSION_FACTOR 8x, elite slot 0 protected). Also live: LBM.getMaxMach() + HUD MaxMach row; fp16 distributions flag (default OFF, enable via cfg.FP16_DISTRIBUTIONS or ?fp16, deviation-stored); non-blocking EVOLVE (begin/step/finishGeneration). Deploy: Cloudflare Pages (git-connect or direct-upload); clean bundle at ~/Desktop/evolve-deploy. Codex paused per user. NEXT: free-slip walls (coordinator, collide shader) optional; Phase 6.
 
 ## MEASURED (real numbers, not spec numbers)
 tau_plus = 0.56, omega_plus = 1.7857, omega_minus = 0.2143  (derived; independently confirmed by Codex Sol 2026-07-17)
@@ -13,6 +13,8 @@ observed Cd = 0.97 (browser, after force-sign flip; order 1, below lit 1-3 but f
 drag evolution best Cd = 3.74 (browser; improved from prior 1.5 plateau, validating force/selection direction)
 observed St = 0.133 (browser zero-crossings; slightly under lit 0.15-0.20, ballpark given ~1 period/window). Lift: mean~0 (symmetric body), oscillates; RMS Cl shown in HUD.
 lift sign convention: force vector negated globally, so lift = -Fy, consistent with drag. Direction is a convention, not pinned to physical +y.
+AIRFOIL RESULT (browser, ld/auto): L/D ~28.5, CL 2.29, Cd 0.08, MaxMach 0.18 — genuine cambered airfoil, camber DISCOVERED from random blobs. HEADLINE RESULT. (L/D 46837 earlier was a drag->0 exploit; fixed.)
+NOTE: negative drag on extreme/ballooned shapes = regime breakdown (gap velocity -> Ma>0.2), not a discrete bug; auto-curriculum MaxMach guard keeps shapes in-regime.
 
 ## SPEC-GAPS (agent-chosen, needs human ruling)
 - 
