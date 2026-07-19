@@ -16,6 +16,16 @@ const CHILD_MUTATION_MULTIPLIERS = [0.5, 1, 2, 4];
 const EXPLORER_COUNT = 5;
 const EXPLORER_AGGRESSION_FACTOR = 8;
 
+// Random immigrants: explorers above are still MUTATED FROM the top keepers, so once the
+// population converges (all keepers near-identical after many generations) even an
+// aggressive mutation just perturbs an already-narrow basin — there's no genuinely new
+// genetic material to try. Immigrants are freshly seeded from scratch (seedGenome), fully
+// independent of the current population, injected every generation. The count escalates
+// the longer the run has been stagnant, so long plateaus get progressively harder resets.
+const IMMIGRANT_BASE_COUNT = 2;
+const IMMIGRANT_STAGNATION_THRESHOLD = 40;
+const IMMIGRANT_STAGNATION_BONUS = 3;
+
 // AUTO curriculum: warm up scoring on |mean lift| (forces camber, avoids the ~0-gradient
 // symmetric-blob stall of raw L/D from a cold start), then switch to 'ld' once camber is
 // established. Whichever trigger fires first wins; once switched, never switches back.
@@ -186,6 +196,17 @@ export class GeneticAlgorithm {
       next[slot] = mutate(explorerParent, explorerMutationScale, this.rng);
     }
 
+    // Immigrants take the slots just before the explorer tail, escalating count under
+    // sustained stagnation. Elitism (below) still has final say, so slot 0 stays protected.
+    const immigrantCount = Math.min(
+      IMMIGRANT_BASE_COUNT + (this.stagnationGenerations >= IMMIGRANT_STAGNATION_THRESHOLD ? IMMIGRANT_STAGNATION_BONUS : 0),
+      Math.max(0, this.cfg.POP - this.cfg.ELITE - explorerCount)
+    );
+    for (let im = 0; im < immigrantCount; im += 1) {
+      const slot = this.cfg.POP - 1 - explorerCount - im;
+      next[slot] = seedGenome(this.rng);
+    }
+
     for (let i = 0; i < this.cfg.ELITE; i += 1) {
       next[i] = new Float32Array(this.genomes[ranked[i]]);
     }
@@ -206,6 +227,7 @@ export class GeneticAlgorithm {
       autoPhase: this.autoPhase,
       scoringMode,
       maxMach,
+      immigrantCount,
     };
   }
 
