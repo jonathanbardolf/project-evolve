@@ -51,16 +51,16 @@ style.textContent = `
   }
   #speed-mode {
     position: fixed; top: 16px; right: 16px; z-index: 2; min-width: 132px;
-    padding: 9px 12px; border: 1px solid #78dce84d; border-radius: 6px;
-    background: #0b1118d0; color: #9fd8e0; font: inherit; font-size: 12px;
+    padding: 9px 12px; border: 1px solid #4ee3f84d; border-radius: 6px;
+    background: #0b1118d0; color: #8fe9f5; font: inherit; font-size: 12px;
     letter-spacing: 0.04em; cursor: pointer; backdrop-filter: blur(6px);
   }
-  #speed-mode:hover, #speed-mode:focus-visible { border-color: #78dce899; background: #111b25e6; }
+  #speed-mode:hover, #speed-mode:focus-visible { border-color: #4ee3f8a6; background: #0e1c26e6; }
   #speed-mode[data-mode="slow"] { color: #ccd6e0; border-color: #ffffff2e; }
   #evolve-mode, #fitness-mode, #hud-toggle {
     position: fixed; right: 16px; z-index: 2; min-width: 132px;
-    padding: 9px 12px; border: 1px solid #c792ea4d; border-radius: 6px;
-    background: #0b1118d0; color: #cbb8e0; font: inherit; font-size: 12px;
+    padding: 9px 12px; border: 1px solid #bd6bf24d; border-radius: 6px;
+    background: #0b1118d0; color: #d8b4f7; font: inherit; font-size: 12px;
     letter-spacing: 0.04em; backdrop-filter: blur(6px);
   }
   #evolve-mode { top: 60px; cursor: pointer; }
@@ -68,17 +68,29 @@ style.textContent = `
   #hud-toggle { top: 148px; cursor: pointer; color: #ccd6e0; border-color: #ffffff2e; }
   #evolve-mode:hover, #evolve-mode:focus-visible, #fitness-mode:hover, #fitness-mode:focus-visible,
   #hud-toggle:hover, #hud-toggle:focus-visible {
-    border-color: #c792ea99; background: #171025e6;
+    border-color: #bd6bf2a6; background: #180f28e6;
   }
-  #evolve-mode[data-active="true"] { color: #a6e3a1; border-color: #a6e3a14d; }
+  #evolve-mode[data-active="true"] { color: #7ef07a; border-color: #7ef07a4d; }
 
   .legend {
     margin: 11px 0 0; padding-top: 9px; border-top: 1px solid #ffffff1c;
   }
   .legend-bar {
     height: 5px; border-radius: 3px; margin-bottom: 4px;
-    background: linear-gradient(to right, #2f9fe0 0%, #0d1620 42%, #05070a 50%, #1c1108 58%, #e0821f 100%);
+    background: linear-gradient(to right, #057aff 0%, #0d1620 42%, #04060a 50%, #1c1108 58%, #ff5205 100%);
   }
+  .tile-nav {
+    position: fixed; top: 50%; z-index: 2; transform: translateY(-50%);
+    width: 44px; height: 64px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid #bd6bf24d; border-radius: 8px;
+    background: #0b1118a6; color: #d8b4f7; font-size: 26px; line-height: 1; padding: 0;
+    cursor: pointer; opacity: 0.55; backdrop-filter: blur(6px);
+    transition: opacity 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  }
+  .tile-nav:hover, .tile-nav:focus-visible { opacity: 1; border-color: #bd6bf2a6; background: #180f28e6; }
+  .tile-nav[hidden] { display: none; }
+  #tile-nav-prev { left: 16px; }
+  #tile-nav-next { right: 16px; }
   .legend-labels {
     display: flex; justify-content: space-between; color: #6b7686; font-size: 10px;
     letter-spacing: 0.03em; text-transform: uppercase;
@@ -151,6 +163,24 @@ for (const mode of ['auto', 'drag', 'ld', 'lift', 'shedding']) {
   fitnessSelect.append(option);
 }
 document.body.append(fitnessSelect);
+
+const tilePrevButton = document.createElement('button');
+tilePrevButton.id = 'tile-nav-prev';
+tilePrevButton.className = 'tile-nav';
+tilePrevButton.type = 'button';
+tilePrevButton.hidden = true;
+tilePrevButton.setAttribute('aria-label', 'Previous tile');
+tilePrevButton.innerHTML = '&#8249;';
+document.body.append(tilePrevButton);
+
+const tileNextButton = document.createElement('button');
+tileNextButton.id = 'tile-nav-next';
+tileNextButton.className = 'tile-nav';
+tileNextButton.type = 'button';
+tileNextButton.hidden = true;
+tileNextButton.setAttribute('aria-label', 'Next tile');
+tileNextButton.innerHTML = '&#8250;';
+document.body.append(tileNextButton);
 
 const lineagePanel = document.createElement('section');
 lineagePanel.id = 'lineage-panel';
@@ -280,6 +310,8 @@ function toggleHud() {
 }
 
 function updateStatus() {
+  tilePrevButton.hidden = !singleTileView;
+  tileNextButton.hidden = !singleTileView;
   if (evolveMode) {
     const explorationState = evolveSigmaScale !== null && evolveSigmaScale <= 3.5
       ? 'REFINING'
@@ -854,6 +886,8 @@ try {
   speedButton.addEventListener('click', toggleSpeedMode);
   evolveButton.addEventListener('click', toggleEvolveMode);
   fitnessSelect.addEventListener('change', () => setFitnessMode(fitnessSelect.value));
+  tilePrevButton.addEventListener('click', () => navigateTile(-1));
+  tileNextButton.addEventListener('click', () => navigateTile(1));
   computeTick();
   requestAnimationFrame(renderTick);
 } catch (error) {

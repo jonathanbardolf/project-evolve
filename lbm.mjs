@@ -40,10 +40,11 @@ void main() {
   float dudy = 0.5 * (texelFetch(u_velocity, yu, 0).g - texelFetch(u_velocity, yd, 0).g);
   float vort = dvdx - dudy;
   float t = clamp(vort / u_scale, -1.0, 1.0);
-  float a = pow(abs(t), 0.65);            // brighten mid-range so shed cores read
-  vec3 bg = vec3(0.03, 0.04, 0.06);
-  vec3 warm = mix(vec3(0.95, 0.42, 0.12), vec3(1.0, 0.93, 0.66), smoothstep(0.5, 1.0, a));
-  vec3 cool = mix(vec3(0.12, 0.55, 0.98), vec3(0.66, 0.94, 1.0), smoothstep(0.5, 1.0, a));
+  float a = pow(abs(t), 0.55);            // steeper than before: cores punch through faster
+  a = clamp(a * 1.2 - 0.08, 0.0, 1.0);    // extra contrast: crush the low end, boost the highs
+  vec3 bg = vec3(0.012, 0.016, 0.03);     // richer near-black so glow reads as luminous
+  vec3 warm = mix(vec3(1.0, 0.32, 0.02), vec3(1.0, 0.97, 0.55), smoothstep(0.35, 1.0, a));
+  vec3 cool = mix(vec3(0.02, 0.48, 1.0), vec3(0.55, 0.99, 1.0), smoothstep(0.35, 1.0, a));
   vec3 glow = t >= 0.0 ? warm : cool;
   color = vec4(mix(bg, glow, a), 1.0);
 }`;
@@ -101,10 +102,11 @@ void main() {
   float dudy = 0.5 * (texelFetch(u_velocity, yu, 0).g - texelFetch(u_velocity, yd, 0).g);
   float vort = dvdx - dudy;
   float t = clamp(vort / u_scale, -1.0, 1.0);
-  float a = pow(abs(t), 0.65);
-  vec3 bg = vec3(0.03, 0.04, 0.06);
-  vec3 warm = mix(vec3(0.95, 0.42, 0.12), vec3(1.0, 0.93, 0.66), smoothstep(0.5, 1.0, a));
-  vec3 cool = mix(vec3(0.12, 0.55, 0.98), vec3(0.66, 0.94, 1.0), smoothstep(0.5, 1.0, a));
+  float a = pow(abs(t), 0.55);
+  a = clamp(a * 1.2 - 0.08, 0.0, 1.0);
+  vec3 bg = vec3(0.012, 0.016, 0.03);
+  vec3 warm = mix(vec3(1.0, 0.32, 0.02), vec3(1.0, 0.97, 0.55), smoothstep(0.35, 1.0, a));
+  vec3 cool = mix(vec3(0.02, 0.48, 1.0), vec3(0.55, 0.99, 1.0), smoothstep(0.35, 1.0, a));
   vec3 glow = t >= 0.0 ? warm : cool;
   color = vec4(mix(bg, glow, a), 1.0);
 }`;
