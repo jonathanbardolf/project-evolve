@@ -43,6 +43,7 @@ style.textContent = `
   }
   .metric-grid dt { color: #8493a3; text-transform: uppercase; letter-spacing: 0.07em; }
   .metric-grid dd { margin: 0; color: #f0f5fa; text-align: right; overflow-wrap: anywhere; }
+  .metric-grid dd.warn { color: #ff6b5e; font-weight: 600; }
   .status-hint {
     margin: 11px 0 0; padding-top: 9px; border-top: 1px solid #ffffff1c;
     color: #8493a3; font-size: 11px;
@@ -108,7 +109,7 @@ document.body.append(evolveButton);
 const fitnessSelect = document.createElement('select');
 fitnessSelect.id = 'fitness-mode';
 fitnessSelect.title = 'Evolution fitness mode';
-for (const mode of ['drag', 'ld', 'lift', 'shedding']) {
+for (const mode of ['auto', 'drag', 'ld', 'lift', 'shedding']) {
   const option = document.createElement('option');
   option.value = mode;
   option.textContent = `FITNESS · ${mode.toUpperCase()}`;
@@ -157,6 +158,8 @@ let evolveSigmaScale = null;
 let evolveStagnationGenerations = 0;
 let evolveMutationScaleMin = null;
 let evolveMutationScaleMax = null;
+let evolveAutoPhase = null;
+let evolveMaxMach = null;
 
 function resizeCanvas() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -171,11 +174,12 @@ function resizeCanvas() {
 function renderStatusMetrics(rows, hint) {
   const grid = document.createElement('dl');
   grid.className = 'metric-grid';
-  for (const [label, value] of rows) {
+  for (const [label, value, warn] of rows) {
     const term = document.createElement('dt');
     term.textContent = label;
     const detail = document.createElement('dd');
     detail.textContent = value;
+    if (warn) detail.classList.add('warn');
     grid.append(term, detail);
   }
   const controls = document.createElement('p');
@@ -204,20 +208,29 @@ function updateStatus() {
       ? 'pending'
       : `${evolveMutationScaleMin.toFixed(1)}–${evolveMutationScaleMax.toFixed(1)}`;
     const sigma = evolveSigmaScale === null ? 'pending' : evolveSigmaScale.toFixed(1);
-    renderStatusMetrics([
+    const machValue = evolveMaxMach === null ? 'pending' : evolveMaxMach.toFixed(2);
+    const machWarn = evolveMaxMach !== null && evolveMaxMach > 0.2;
+    const rows = [
       ['State', paused ? 'PAUSED' : 'EVOLVING'],
       ['Generation', ga.generation.toLocaleString()],
       ['Fitness', ga.mode.toUpperCase()],
+    ];
+    if (ga.mode === 'auto') {
+      rows.push(['Phase', evolveAutoPhase === 'refine-ld' ? 'REFINE · L/D' : 'WARMUP · LIFT']);
+    }
+    rows.push(
       ['Best score', evolveBestScore === null ? 'awaiting' : evolveBestScore.toFixed(4)],
       ['Cd', evolveBestCd === null ? 'awaiting' : evolveBestCd.toFixed(3)],
       ['Cl', evolveBestCl === null ? 'awaiting' : evolveBestCl.toFixed(3)],
       ['L/D', evolveBestLd === null ? 'awaiting' : evolveBestLd.toFixed(3)],
       ['Best tile', evolveBestScore === null ? 'awaiting' : String(evolveBestTile + 1)],
+      ['Max Mach', machWarn ? `${machValue} (LIMIT)` : machValue, machWarn],
       ['Anneal stage', explorationState],
       ['Sigma', sigma],
       ['Mutation range', mutationRange],
       ['Stagnant generations', String(evolveStagnationGenerations)],
-    ], 'Space pause · G evolution · R reseed · V view · F forces · H hide');
+    );
+    renderStatusMetrics(rows, 'Space pause · G evolution · R reseed · V view · F forces · H hide');
     evolveButton.dataset.active = 'true';
     evolveButton.textContent = 'EVOLVE · ON';
     evolveButton.setAttribute('aria-pressed', 'true');
@@ -237,11 +250,13 @@ function updateStatus() {
     ['FPS', String(Math.round(framesPerSec))],
   ];
   if (forceDiagnostics) {
+    const machWarn = forceDiagnostics.maxMach > 0.2;
     rows.push(
       ['Cd', forceDiagnostics.cd.toFixed(2)],
       ['Cl mean', forceDiagnostics.cl.toFixed(2)],
       ['Cl RMS', forceDiagnostics.clRms.toFixed(2)],
       ['St', forceDiagnostics.st.toFixed(3)],
+      ['Max Mach', machWarn ? `${forceDiagnostics.maxMach.toFixed(2)} (LIMIT)` : forceDiagnostics.maxMach.toFixed(2), machWarn],
     );
   }
   renderStatusMetrics(
@@ -306,6 +321,8 @@ function resetEvolutionExplorationState() {
   evolveStagnationGenerations = ga ? ga.stagnationGenerations : 0;
   evolveMutationScaleMin = null;
   evolveMutationScaleMax = null;
+  evolveAutoPhase = ga ? ga.autoPhase : null;
+  evolveMaxMach = null;
 }
 
 function setFitnessMode(mode) {
@@ -345,6 +362,8 @@ function driveEvolution() {
       evolveStagnationGenerations = result.stagnationGenerations;
       evolveMutationScaleMin = Math.min(...result.mutationScales);
       evolveMutationScaleMax = Math.max(...result.mutationScales);
+      evolveAutoPhase = result.autoPhase;
+      evolveMaxMach = result.maxMach;
       evolveGenerationReady = false;
       updateStatus();
     }
@@ -407,6 +426,7 @@ function showDiagnostics() {
     cl: d.cl[0],
     clRms: d.clRms[0],
     st: d.st[0],
+    maxMach: d.maxMach,
   };
   console.log('[evolve] Phase 3 diagnostics', d);
 }

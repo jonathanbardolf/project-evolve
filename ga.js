@@ -2,19 +2,29 @@ import { mutate, seedGenome } from './genome.js';
 import { rasterize } from './raster.js';
 import { score } from './fitness.js';
 
-const MODES = new Set(['drag', 'ld', 'lift', 'shedding']);
+const MODES = new Set(['drag', 'ld', 'lift', 'shedding', 'auto']);
 const INITIAL_SIGMA_SCALE = 30;
 const MIN_SIGMA_SCALE = 1.75;
 const ANNEALING_RATE = 0.75;
 const MEANINGFUL_IMPROVEMENT = 0.002;
 const CHILD_MUTATION_MULTIPLIERS = [0.5, 1, 2, 4];
 
+// AUTO curriculum: warm up scoring on |mean lift| (forces camber, avoids the ~0-gradient
+// symmetric-blob stall of raw L/D from a cold start), then switch to 'ld' once camber is
+// established. Whichever trigger fires first wins; once switched, never switches back.
+const AUTO_CL_SWITCH_THRESHOLD = 1.0;
+const AUTO_CL_STREAK_REQUIRED = 2;
+const AUTO_WARMUP_CAP = 15;
+const AUTO_MACH_GUARD = 0.2;
+
 export class GeneticAlgorithm {
   constructor(solver, cfg, rng = Math.random) {
     this.solver = solver;
     this.cfg = cfg;
     this.rng = rng;
-    this.mode = 'drag';
+    // 'auto' is the recommended default: a fresh EVOLVE run warms up on lift then refines
+    // on L/D with no user action required.
+    this.mode = 'auto';
     // Coefficients are lattice-scale (a circle has a0 ~= 20), so single-digit multipliers
     // make the frozen 0.05/n mutation too small to escape the initially selected seed family.
     this.sigmaScale = INITIAL_SIGMA_SCALE;
@@ -25,6 +35,16 @@ export class GeneticAlgorithm {
     this.lineage = [];
     this.generationActive = false;
     this.stepsRemaining = 0;
+    this.autoPhase = 'warmup-lift';
+    this._autoWarmupGenerations = 0;
+    this._autoClStreak = 0;
+  }
+
+  // The score() mode actually driving selection this generation: 'auto' is a meta-mode
+  // that resolves to 'lift' during warm-up and 'ld' once camber is established.
+  _currentScoringMode() {
+    if (this.mode !== 'auto') return this.mode;
+    return this.autoPhase === 'warmup-lift' ? 'lift' : 'ld';
   }
 
   adaptMutationStrength(bestScore) {
@@ -54,6 +74,9 @@ export class GeneticAlgorithm {
     this.sigmaScale = INITIAL_SIGMA_SCALE;
     this.bestScoreSeen = -Infinity;
     this.stagnationGenerations = 0;
+    this.autoPhase = 'warmup-lift';
+    this._autoWarmupGenerations = 0;
+    this._autoClStreak = 0;
   }
 
   reseed() {
@@ -65,6 +88,9 @@ export class GeneticAlgorithm {
     this.sigmaScale = INITIAL_SIGMA_SCALE;
     this.bestScoreSeen = -Infinity;
     this.stagnationGenerations = 0;
+    this.autoPhase = 'warmup-lift';
+    this._autoWarmupGenerations = 0;
+    this._autoClStreak = 0;
   }
 
   beginGeneration() {
@@ -94,7 +120,8 @@ export class GeneticAlgorithm {
 
     const lift = this.solver.readLiftHistory();
     const drag = this.solver.readDragHistory();
-    const scores = score(lift, drag, this.mode, this.cfg);
+    const scoringMode = this._currentScoringMode();
+    const scores = score(lift, drag, scoringMode, this.cfg);
     const ranked = Array.from({ length: this.cfg.POP }, (_, index) => index)
       .sort((a, b) => scores[b] - scores[a]);
     const best = ranked[0];
@@ -111,6 +138,27 @@ export class GeneticAlgorithm {
     const bestLd = Math.abs(bestCd) > 1e-8 ? bestCl / bestCd : 0;
     this.lineage.push({ genome: new Float32Array(this.genomes[best]), score: scores[best] });
     this.adaptMutationStrength(scores[best]);
+
+    // Computed once per generation (not per step) for the auto regime guard and the HUD.
+    const maxMach = typeof this.solver.getMaxMach === 'function' ? this.solver.getMaxMach() : 0;
+
+    if (this.mode === 'auto' && this.autoPhase === 'warmup-lift') {
+      this._autoWarmupGenerations += 1;
+      if (Math.abs(bestCl) > AUTO_CL_SWITCH_THRESHOLD) this._autoClStreak += 1;
+      else this._autoClStreak = 0;
+
+      const machTripped = maxMach > AUTO_MACH_GUARD;
+      const clTripped = this._autoClStreak >= AUTO_CL_STREAK_REQUIRED;
+      const capTripped = this._autoWarmupGenerations >= AUTO_WARMUP_CAP;
+      if (machTripped || clTripped || capTripped) {
+        this.autoPhase = 'refine-ld';
+        // Scoring units change from |lift| to L/D; the warm-up phase's stagnation baseline
+        // is meaningless in the new units. Reset it, but leave sigmaScale alone — a lineage
+        // partway through annealing should not be reheated by this internal switch.
+        this.bestScoreSeen = -Infinity;
+        this.stagnationGenerations = 0;
+      }
+    }
 
     const next = [];
     for (let k = 0; k < this.cfg.KEEP; k += 1) {
@@ -137,6 +185,9 @@ export class GeneticAlgorithm {
       sigmaScale: this.sigmaScale,
       stagnationGenerations: this.stagnationGenerations,
       mutationScales: CHILD_MUTATION_MULTIPLIERS.map((scale) => scale * this.sigmaScale),
+      autoPhase: this.autoPhase,
+      scoringMode,
+      maxMach,
     };
   }
 

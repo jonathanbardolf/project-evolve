@@ -129,6 +129,31 @@ void main() {
   outHist = vec4(s.y, s.x, 0.0, 0.0);   // R = lift, G = drag (spec order)
 }`;
 
+// Log2 max-downsample of the velocity texture's speed (.a) channel. First pass reads the
+// RGBA velocity texture directly; later passes read the single-channel (.r) intermediate
+// levels produced by earlier passes. No readback here — getMaxMach() reads back the final
+// 1x1 level only when called, never per step.
+const MAX_REDUCE_FRAGMENT = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D u_src;
+uniform int u_srcW;
+uniform int u_srcH;
+uniform bool u_firstPass;
+out vec4 outMax;
+void main() {
+  ivec2 p = ivec2(gl_FragCoord.xy) * 2;
+  float m = 0.0;
+  for (int dy = 0; dy < 2; ++dy) {
+    for (int dx = 0; dx < 2; ++dx) {
+      ivec2 q = ivec2(min(p.x + dx, u_srcW - 1), min(p.y + dy, u_srcH - 1));
+      float v = u_firstPass ? texelFetch(u_src, q, 0).a : texelFetch(u_src, q, 0).r;
+      m = max(m, v);
+    }
+  }
+  outMax = vec4(m, 0.0, 0.0, 0.0);
+}`;
+
 function fail(message) {
   throw new Error(`LBM: ${message}`);
 }
@@ -290,6 +315,30 @@ export class LBM {
     gl.uniform1i(gl.getUniformLocation(this._reduceXProgram, 'u_row'), 0);
     gl.uniform1i(gl.getUniformLocation(this._reduceXProgram, 'u_tileW'), cfg.TILE_W);
     gl.uniform1i(gl.getUniformLocation(this._reduceXProgram, 'u_gridX'), cfg.GRID_X);
+
+    // --- Max-Mach reduction pipeline: fixed chain of log2-halving levels, allocated once.
+    this._CS = 1 / Math.sqrt(3);   // lattice speed of sound
+    this._maxReduceProgram = createProgram(gl, MAX_REDUCE_FRAGMENT, 'maxReduce');
+    this._maxReduceUniforms = {
+      srcW: gl.getUniformLocation(this._maxReduceProgram, 'u_srcW'),
+      srcH: gl.getUniformLocation(this._maxReduceProgram, 'u_srcH'),
+      firstPass: gl.getUniformLocation(this._maxReduceProgram, 'u_firstPass'),
+    };
+    gl.useProgram(this._maxReduceProgram);
+    gl.uniform1i(gl.getUniformLocation(this._maxReduceProgram, 'u_src'), 0);
+    this._maxLevels = [];
+    {
+      let w = this.width;
+      let h = this.height;
+      while (w > 1 || h > 1) {
+        w = Math.max(1, Math.ceil(w / 2));
+        h = Math.max(1, Math.ceil(h / 2));
+        const texture = this._createTextureSized(gl.RGBA32F, w, h);
+        const levelFBO = this._createSingleFBO(texture);
+        this._maxLevels.push({ w, h, texture, fbo: levelFBO });
+      }
+    }
+    this._maxMachReadback = new Float32Array(4);
 
     this.reset();
   }
@@ -673,7 +722,46 @@ export class LBM {
       clRms[t] = Math.sqrt(sumSq / slots) / q;
       st[t] = ((crossings / 2) / windowSteps) * cfg.CHORD / cfg.U_IN;
     }
-    return { cd, st, cl, clRms };
+    return { cd, st, cl, clRms, maxMach: this.getMaxMach() };
+  }
+
+  // Max Mach over the whole domain: log2 GPU max-reduction of the velocity texture's speed
+  // (.a) channel, then a single 1x1 readback. Solid cells store velocity (0,0) (see
+  // lbm_collide.glsl), so no explicit fluid mask is needed. Call this periodically (once per
+  // generation, once per HUD tick) — never per step, since the final readback is a GPU sync.
+  getMaxMach() {
+    const gl = this.gl;
+    gl.bindVertexArray(this._vao);
+    gl.disable(gl.BLEND);
+    gl.disable(gl.DEPTH_TEST);
+    gl.useProgram(this._maxReduceProgram);
+
+    let srcTex = this.velocityTexture;
+    let srcW = this.width;
+    let srcH = this.height;
+    let firstPass = true;
+    for (const level of this._maxLevels) {
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, level.fbo);
+      gl.viewport(0, 0, level.w, level.h);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, srcTex);
+      gl.uniform1i(this._maxReduceUniforms.srcW, srcW);
+      gl.uniform1i(this._maxReduceUniforms.srcH, srcH);
+      gl.uniform1i(this._maxReduceUniforms.firstPass, firstPass ? 1 : 0);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      srcTex = level.texture;
+      srcW = level.w;
+      srcH = level.h;
+      firstPass = false;
+    }
+
+    const last = this._maxLevels[this._maxLevels.length - 1];
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, last.fbo);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, this._maxMachReadback);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    return this._maxMachReadback[0] / this._CS;
   }
 
   get velocityTexture() {
