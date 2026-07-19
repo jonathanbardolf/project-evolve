@@ -57,7 +57,7 @@ style.textContent = `
   }
   #speed-mode:hover, #speed-mode:focus-visible { border-color: #4ee3f8a6; background: #0e1c26e6; }
   #speed-mode[data-mode="slow"] { color: #ccd6e0; border-color: #ffffff2e; }
-  #evolve-mode, #fitness-mode, #hud-toggle {
+  #evolve-mode, #fitness-mode, #hud-toggle, #tile-view-toggle {
     position: fixed; right: 16px; z-index: 2; min-width: 132px;
     padding: 9px 12px; border: 1px solid #bd6bf24d; border-radius: 6px;
     background: #0b1118d0; color: #d8b4f7; font: inherit; font-size: 12px;
@@ -66,11 +66,13 @@ style.textContent = `
   #evolve-mode { top: 60px; cursor: pointer; }
   #fitness-mode { top: 104px; cursor: pointer; }
   #hud-toggle { top: 148px; cursor: pointer; color: #ccd6e0; border-color: #ffffff2e; }
+  #tile-view-toggle { top: 192px; cursor: pointer; color: #ccd6e0; border-color: #ffffff2e; }
   #evolve-mode:hover, #evolve-mode:focus-visible, #fitness-mode:hover, #fitness-mode:focus-visible,
-  #hud-toggle:hover, #hud-toggle:focus-visible {
+  #hud-toggle:hover, #hud-toggle:focus-visible, #tile-view-toggle:hover, #tile-view-toggle:focus-visible {
     border-color: #bd6bf2a6; background: #180f28e6;
   }
   #evolve-mode[data-active="true"] { color: #7ef07a; border-color: #7ef07a4d; }
+  #tile-view-toggle[data-active="true"] { color: #7ef07a; border-color: #7ef07a4d; }
 
   .legend {
     margin: 11px 0 0; padding-top: 9px; border-top: 1px solid #ffffff1c;
@@ -164,6 +166,12 @@ for (const mode of ['auto', 'drag', 'ld', 'lift', 'shedding']) {
 }
 document.body.append(fitnessSelect);
 
+const tileViewButton = document.createElement('button');
+tileViewButton.id = 'tile-view-toggle';
+tileViewButton.type = 'button';
+tileViewButton.title = 'Toggle single-tile / grid view (T)';
+document.body.append(tileViewButton);
+
 const tilePrevButton = document.createElement('button');
 tilePrevButton.id = 'tile-nav-prev';
 tilePrevButton.className = 'tile-nav';
@@ -239,7 +247,7 @@ let evolveMutationScaleMin = null;
 let evolveMutationScaleMax = null;
 let evolveAutoPhase = null;
 let evolveMaxMach = null;
-let singleTileView = false;
+let singleTileView = true;
 let selectedTile = 0;
 let tileManuallyChosen = false;
 let legendVisible = false;
@@ -309,7 +317,14 @@ function toggleHud() {
   updateHudButton();
 }
 
+function updateTileViewButton() {
+  tileViewButton.textContent = `VIEW · ${singleTileView ? 'SINGLE' : 'GRID'}`;
+  tileViewButton.dataset.active = String(singleTileView);
+  tileViewButton.setAttribute('aria-pressed', String(singleTileView));
+}
+
 function updateStatus() {
+  updateTileViewButton();
   tilePrevButton.hidden = !singleTileView;
   tileNextButton.hidden = !singleTileView;
   if (evolveMode) {
@@ -886,6 +901,7 @@ try {
   speedButton.addEventListener('click', toggleSpeedMode);
   evolveButton.addEventListener('click', toggleEvolveMode);
   fitnessSelect.addEventListener('change', () => setFitnessMode(fitnessSelect.value));
+  tileViewButton.addEventListener('click', toggleSingleTileView);
   tilePrevButton.addEventListener('click', () => navigateTile(-1));
   tileNextButton.addEventListener('click', () => navigateTile(1));
   computeTick();
