@@ -57,7 +57,7 @@ style.textContent = `
   }
   #speed-mode:hover, #speed-mode:focus-visible { border-color: #4ee3f8a6; background: #0e1c26e6; }
   #speed-mode[data-mode="slow"] { color: #ccd6e0; border-color: #ffffff2e; }
-  #evolve-mode, #fitness-mode, #hud-toggle, #tile-view-toggle {
+  #evolve-mode, #fitness-mode, #strategy-mode, #hud-toggle, #tile-view-toggle {
     position: fixed; right: 16px; z-index: 2; min-width: 132px;
     padding: 9px 12px; border: 1px solid #bd6bf24d; border-radius: 6px;
     background: #0b1118d0; color: #d8b4f7; font: inherit; font-size: 12px;
@@ -65,9 +65,10 @@ style.textContent = `
   }
   #evolve-mode { top: 60px; cursor: pointer; }
   #fitness-mode { top: 104px; cursor: pointer; }
-  #hud-toggle { top: 148px; cursor: pointer; color: #ccd6e0; border-color: #ffffff2e; }
-  #tile-view-toggle { top: 192px; cursor: pointer; color: #ccd6e0; border-color: #ffffff2e; }
-  #evolve-mode:hover, #evolve-mode:focus-visible, #fitness-mode:hover, #fitness-mode:focus-visible,
+  #strategy-mode { top: 148px; cursor: pointer; }
+  #hud-toggle { top: 192px; cursor: pointer; color: #ccd6e0; border-color: #ffffff2e; }
+  #tile-view-toggle { top: 236px; cursor: pointer; color: #ccd6e0; border-color: #ffffff2e; }
+  #evolve-mode:hover, #evolve-mode:focus-visible, #fitness-mode:hover, #fitness-mode:focus-visible, #strategy-mode:hover, #strategy-mode:focus-visible,
   #hud-toggle:hover, #hud-toggle:focus-visible, #tile-view-toggle:hover, #tile-view-toggle:focus-visible {
     border-color: #bd6bf2a6; background: #180f28e6;
   }
@@ -120,7 +121,7 @@ style.textContent = `
   .lineage-thumb.selected { border-color: #78dce8b3; color: #b9f4fa; }
   .lineage-caption { margin: 7px 0 0; color: #8493a3; }
   @media (max-width: 600px) {
-    #status { top: 196px; max-height: calc(100vh - 212px); }
+    #status { top: 240px; max-height: calc(100vh - 256px); }
   }
 `;
 document.head.append(style);
@@ -165,6 +166,17 @@ for (const mode of ['auto', 'drag', 'ld', 'lift', 'shedding']) {
   fitnessSelect.append(option);
 }
 document.body.append(fitnessSelect);
+
+const strategySelect = document.createElement('select');
+strategySelect.id = 'strategy-mode';
+strategySelect.title = 'Evolution strategy';
+for (const [value, label] of [['population', 'POOL'], ['single', 'SINGLE']]) {
+  const option = document.createElement('option');
+  option.value = value;
+  option.textContent = `STRATEGY · ${label}`;
+  strategySelect.append(option);
+}
+document.body.append(strategySelect);
 
 const tileViewButton = document.createElement('button');
 tileViewButton.id = 'tile-view-toggle';
@@ -341,6 +353,7 @@ function updateStatus() {
       ['State', paused ? 'PAUSED' : 'EVOLVING'],
       ['Generation', ga.generation.toLocaleString()],
       ['Fitness', ga.mode.toUpperCase()],
+      ['Strategy', ga.strategy === 'single' ? 'SINGLE' : 'POOL'],
     ];
     if (ga.mode === 'auto') {
       rows.push(['Phase', evolveAutoPhase === 'refine-ld' ? 'REFINE · L/D' : 'WARMUP · LIFT']);
@@ -367,6 +380,7 @@ function updateStatus() {
     evolveButton.textContent = 'EVOLVE · ON';
     evolveButton.setAttribute('aria-pressed', 'true');
     fitnessSelect.value = ga.mode;
+    strategySelect.value = ga.strategy;
     return;
   }
 
@@ -404,6 +418,7 @@ function updateStatus() {
   evolveButton.textContent = 'EVOLVE · OFF';
   evolveButton.setAttribute('aria-pressed', 'false');
   fitnessSelect.value = ga ? ga.mode : 'drag';
+  strategySelect.value = ga ? ga.strategy : 'population';
 }
 
 function fail(error) {
@@ -601,6 +616,17 @@ function setFitnessMode(mode) {
   evolveBestLd = null;
   resetEvolutionExplorationState();
   fitnessSelect.value = mode;
+  updateStatus();
+}
+
+function setStrategy(strategy) {
+  ga.setStrategy(strategy);
+  evolveBestScore = null;
+  evolveBestCd = null;
+  evolveBestCl = null;
+  evolveBestLd = null;
+  resetEvolutionExplorationState();
+  strategySelect.value = strategy;
   updateStatus();
 }
 
@@ -901,6 +927,7 @@ try {
   speedButton.addEventListener('click', toggleSpeedMode);
   evolveButton.addEventListener('click', toggleEvolveMode);
   fitnessSelect.addEventListener('change', () => setFitnessMode(fitnessSelect.value));
+  strategySelect.addEventListener('change', () => setStrategy(strategySelect.value));
   tileViewButton.addEventListener('click', toggleSingleTileView);
   tilePrevButton.addEventListener('click', () => navigateTile(-1));
   tileNextButton.addEventListener('click', () => navigateTile(1));

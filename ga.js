@@ -3,6 +3,7 @@ import { rasterize } from './raster.js';
 import { score } from './fitness.js';
 
 const MODES = new Set(['drag', 'ld', 'lift', 'shedding', 'auto']);
+const STRATEGIES = new Set(['population', 'single']);
 const INITIAL_SIGMA_SCALE = 30;
 const MIN_SIGMA_SCALE = 1.75;
 const ANNEALING_RATE = 0.75;
@@ -42,6 +43,9 @@ export class GeneticAlgorithm {
     // 'auto' is the recommended default: a fresh EVOLVE run warms up on lift then refines
     // on L/D with no user action required.
     this.mode = 'auto';
+    // Population preserves the original truncation-selection behavior. Single evolves one
+    // parent lineage while retaining an exact elite copy in every evaluated generation.
+    this.strategy = 'population';
     // Coefficients are lattice-scale (a circle has a0 ~= 20), so single-digit multipliers
     // make the frozen 0.05/n mutation too small to escape the initially selected seed family.
     this.sigmaScale = INITIAL_SIGMA_SCALE;
@@ -94,6 +98,15 @@ export class GeneticAlgorithm {
     this.autoPhase = 'warmup-lift';
     this._autoWarmupGenerations = 0;
     this._autoClStreak = 0;
+  }
+
+  setStrategy(strategy) {
+    if (!STRATEGIES.has(strategy)) throw new Error(`Unknown evolution strategy: ${strategy}`);
+    if (strategy === this.strategy) return;
+    this.strategy = strategy;
+    this.sigmaScale = INITIAL_SIGMA_SCALE;
+    this.bestScoreSeen = -Infinity;
+    this.stagnationGenerations = 0;
   }
 
   reseed() {
@@ -177,38 +190,57 @@ export class GeneticAlgorithm {
       }
     }
 
-    const next = [];
-    for (let k = 0; k < this.cfg.KEEP; k += 1) {
-      const parent = this.genomes[ranked[k]];
-      for (let child = 0; child < this.cfg.POP / this.cfg.KEEP; child += 1) {
-        const mutationScale = this.sigmaScale * CHILD_MUTATION_MULTIPLIERS[child];
-        next.push(mutate(parent, mutationScale, this.rng));
+    let next;
+    let mutationScales;
+    let immigrantCount = 0;
+    if (this.strategy === 'population') {
+      next = [];
+      for (let k = 0; k < this.cfg.KEEP; k += 1) {
+        const parent = this.genomes[ranked[k]];
+        for (let child = 0; child < this.cfg.POP / this.cfg.KEEP; child += 1) {
+          const mutationScale = this.sigmaScale * CHILD_MUTATION_MULTIPLIERS[child];
+          next.push(mutate(parent, mutationScale, this.rng));
+        }
       }
-    }
-    // Explorer children: overwrite the tail slots of the offspring array with aggressively
-    // mutated copies of the top keepers. This runs after the stratified refiners above and
-    // before the elite copy below, so elitism still has the final word on slot 0..ELITE-1.
-    const explorerCount = Math.min(EXPLORER_COUNT, this.cfg.POP);
-    const explorerMutationScale = this.sigmaScale * EXPLORER_AGGRESSION_FACTOR;
-    for (let e = 0; e < explorerCount; e += 1) {
-      const slot = this.cfg.POP - 1 - e;
-      const explorerParent = this.genomes[ranked[e % this.cfg.KEEP]];
-      next[slot] = mutate(explorerParent, explorerMutationScale, this.rng);
-    }
+      // Explorer children: overwrite the tail slots of the offspring array with aggressively
+      // mutated copies of the top keepers. This runs after the stratified refiners above and
+      // before the elite copy below, so elitism still has the final word on slot 0..ELITE-1.
+      const explorerCount = Math.min(EXPLORER_COUNT, this.cfg.POP);
+      const explorerMutationScale = this.sigmaScale * EXPLORER_AGGRESSION_FACTOR;
+      for (let e = 0; e < explorerCount; e += 1) {
+        const slot = this.cfg.POP - 1 - e;
+        const explorerParent = this.genomes[ranked[e % this.cfg.KEEP]];
+        next[slot] = mutate(explorerParent, explorerMutationScale, this.rng);
+      }
 
-    // Immigrants take the slots just before the explorer tail, escalating count under
-    // sustained stagnation. Elitism (below) still has final say, so slot 0 stays protected.
-    const immigrantCount = Math.min(
-      IMMIGRANT_BASE_COUNT + (this.stagnationGenerations >= IMMIGRANT_STAGNATION_THRESHOLD ? IMMIGRANT_STAGNATION_BONUS : 0),
-      Math.max(0, this.cfg.POP - this.cfg.ELITE - explorerCount)
-    );
-    for (let im = 0; im < immigrantCount; im += 1) {
-      const slot = this.cfg.POP - 1 - explorerCount - im;
-      next[slot] = seedGenome(this.rng);
-    }
+      // Immigrants take the slots just before the explorer tail, escalating count under
+      // sustained stagnation. Elitism (below) still has final say, so slot 0 stays protected.
+      immigrantCount = Math.min(
+        IMMIGRANT_BASE_COUNT + (this.stagnationGenerations >= IMMIGRANT_STAGNATION_THRESHOLD ? IMMIGRANT_STAGNATION_BONUS : 0),
+        Math.max(0, this.cfg.POP - this.cfg.ELITE - explorerCount)
+      );
+      for (let im = 0; im < immigrantCount; im += 1) {
+        const slot = this.cfg.POP - 1 - explorerCount - im;
+        next[slot] = seedGenome(this.rng);
+      }
 
-    for (let i = 0; i < this.cfg.ELITE; i += 1) {
-      next[i] = new Float32Array(this.genomes[ranked[i]]);
+      for (let i = 0; i < this.cfg.ELITE; i += 1) {
+        next[i] = new Float32Array(this.genomes[ranked[i]]);
+      }
+      mutationScales = CHILD_MUTATION_MULTIPLIERS.map((scale) => scale * this.sigmaScale);
+    } else {
+      const parent = this.genomes[best];
+      next = [new Float32Array(parent)];
+      mutationScales = [];
+      // Fifteen descendants repeat the 0.5x/1x/2x/4x ladder (four, four, four, and three
+      // slots respectively), preserving a simultaneous refinement-to-exploration gradient.
+      // No immigrants here: every non-elite slot is deliberately part of this one lineage.
+      for (let slot = this.cfg.ELITE; slot < this.cfg.POP; slot += 1) {
+        const multiplier = CHILD_MUTATION_MULTIPLIERS[(slot - this.cfg.ELITE) % CHILD_MUTATION_MULTIPLIERS.length];
+        const mutationScale = this.sigmaScale * multiplier;
+        next.push(mutate(parent, mutationScale, this.rng));
+        mutationScales.push(mutationScale);
+      }
     }
     this.genomes = next;
     this.generation += 1;
@@ -223,7 +255,7 @@ export class GeneticAlgorithm {
       bestLd,
       sigmaScale: this.sigmaScale,
       stagnationGenerations: this.stagnationGenerations,
-      mutationScales: CHILD_MUTATION_MULTIPLIERS.map((scale) => scale * this.sigmaScale),
+      mutationScales,
       autoPhase: this.autoPhase,
       scoringMode,
       maxMach,
